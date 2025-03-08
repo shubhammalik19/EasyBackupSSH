@@ -6,7 +6,7 @@ import sys
 host = "logisticsoftware.in"
 user = "root"
 port = 8165
-password = "wR##5Tu#s11E"  # Replace with the actual password
+password = "PASSWORD"  # Replace with the actual password
 
 def connect_ssh():
     """Connects to the SSH server using paramiko."""
