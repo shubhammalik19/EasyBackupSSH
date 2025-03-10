@@ -5,7 +5,13 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-
+import logging
+# Configure logging
+logging.basicConfig(
+    filename="download.log", 
+    level=logging.INFO, 
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 # Create a global stop event
 stop_event = threading.Event()
 
@@ -14,6 +20,7 @@ def browse_directory():
     folder_selected = filedialog.askdirectory()
     if folder_selected:
         download_path.set(folder_selected)  # Update the path variable
+        logging.info(f"Backup path set to: {folder_selected}")
 
 def start_download():
     """Handles SSH connection and file download process."""
@@ -28,16 +35,19 @@ def start_download():
 
     if not dest_dir:
         messagebox.showwarning("Warning", "Please select a download directory.")
+        logging.warning("Download directory not selected.")
         return
-
+    
     def connect_ssh():
         """Establish an SSH connection."""
         try:
             client = paramiko.SSHClient()
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             client.connect(hostname=host, port=port, username=user, password=password)
+            logging.info(f"Connected to {host_entry.get()} via SSH")
             return client
         except Exception as e:
+            logging.error(f"SSH Connection Failed: {e}")
             root.after(0, lambda: messagebox.showerror("SSH Connection Failed", f"Failed to connect: {e}"))
             return None
 
@@ -49,8 +59,11 @@ def start_download():
         try:
             stdin, stdout, stderr = client.exec_command("ls /home")
             all_dirs = stdout.read().decode().split()
-            return [d for d in all_dirs if d not in exclude_dirs]
+            valid_dirs = [d for d in all_dirs if d not in exclude_dirs]
+            logging.info(f"Valid home directories found: {valid_dirs}")
+            return valid_dirs
         except Exception as e:
+            logging.error(f"Failed to list directories: {e}")
             root.after(0, lambda: messagebox.showerror("Error", f"Failed to list directories: {e}"))
             return []
 
@@ -73,6 +86,7 @@ def start_download():
             folders_to_download.append(list_dirs.rstrip('/'))
 
     client.close()
+    logging.info(f"Folders to download: {folders_to_download}")
 
     if len(folders_to_download) > 0:
         progress_step = 100 / len(folders_to_download)
@@ -86,12 +100,14 @@ def start_download():
         """Uses rsync to download folders from the remote server."""
         if stop_event.is_set():
             root.after(0, lambda: folder_table.item(index, values=(index + 1, os.path.basename(source_dir.rstrip('/')), "Cancelled")))
+            logging.info(f"Download cancelled: {source_dir}")
             return
 
         try:
             folder_name = os.path.basename(source_dir.rstrip('/'))
             if folder_name == 'backup_CAT_KILLER_NUPI_SIBIDI':
                 root.after(0, lambda: folder_table.item(index, values=(index + 1, folder_name, "Skipped")))
+                logging.info(f"Skipped: {folder_name}")
                 return
             
             target_dir = os.path.join(dest_dir, folder_name)
@@ -101,7 +117,9 @@ def start_download():
 
             root.after(0, lambda: folder_table.item(index, values=(index + 1, folder_name, "In Progress")))
 
-            rsync_command = f"sshpass -p '{password}' rsync -avz -e 'ssh -p {port}' {exclude_option} {user}@{host}:{source_dir}/ {target_dir}/"
+            logging.info(f"Downloading: {folder_name}")
+            #rsync_command = f"sshpass -p '{password}' rsync -avz -e 'ssh -p {port}' {exclude_option} {user}@{host}:{source_dir}/ {target_dir}/"
+            rsync_command = f"sshpass -p '{password}' rsync -az --no-perms --no-owner --no-group --ignore-errors --partial --bwlimit=0 -e 'ssh -p {port} -C' {exclude_option} {user}@{host}:{source_dir}/ {target_dir}/"
 
             process = subprocess.Popen(rsync_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -113,17 +131,20 @@ def start_download():
 
             if process.returncode == 0:
                 root.after(0, lambda: folder_table.item(index, values=(index + 1, folder_name, "Completed")))
+                logging.info(f"Download completed: {folder_name}")
             else:
                 root.after(0, lambda: folder_table.item(index, values=(index + 1, folder_name, "Failed")))
+                logging.error(f"Download failed for {folder_name}: {stderr.decode()}")
 
             root.after(0, lambda: update_progress(progress["value"] + progress_step))
 
         except Exception as e:
             root.after(0, lambda: folder_table.item(index, values=(index + 1, folder_name, "Failed")))
             root.after(0, lambda: messagebox.showerror("Download Error", f"Failed to download {folder_name}: {e}"))
+            logging.error(f"Failed to download {folder_name}: {e}")
 
     def start_download_thread():
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             [executor.submit(downloadFolderWithRsync, folder, index) for index, folder in enumerate(folders_to_download)]
 
         root.after(0, lambda: progress.config(value=100))
@@ -137,9 +158,11 @@ def close_application():
     # Find and terminate any running rsync processes
     try:
         subprocess.run("pkill -f rsync", shell=True, stderr=subprocess.DEVNULL)
+        logging.info("Terminated all rsync processes.")
     except Exception as e:
         print(f"Error stopping rsync: {e}")
-
+        logging.error(f"Error stopping rsync: {e}")
+    logging.info("Application closed.")
     root.quit()  # Stop the Tkinter main event loop
     root.destroy()  # Destroy all UI components and exit completely
 
@@ -147,11 +170,7 @@ def update_progress(value):
     progress["value"] = value
     root.after(100, lambda: progress.update_idletasks())
 
-def browse_directory():
-    """Opens a dialog for the user to select the download folder."""
-    folder_selected = filedialog.askdirectory()
-    if folder_selected:
-        download_path.set(folder_selected)  # Update the path variable
+
 
 
 # GUI Setup
@@ -160,10 +179,10 @@ root.title("SSH File Downloader")
 root.geometry("1024x650")
 
 download_path = tk.StringVar(value="/home/shubham/ssh_python/backup")
-host = tk.StringVar(value="logisticsoftware.in")
-user = tk.StringVar(value="root")
-port = tk.StringVar(value="8165")
-password = tk.StringVar(value="your_password")
+host = tk.StringVar(value="DOMAIN")
+user = tk.StringVar(value="USER")
+port = tk.StringVar(value="PORT")
+password = tk.StringVar(value="YOUR_PASSWORD")
 
 frame = tk.Frame(root, padx=20, pady=20)
 frame.pack(padx=10, pady=10)
